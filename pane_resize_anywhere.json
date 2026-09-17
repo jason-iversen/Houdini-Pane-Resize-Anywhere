@@ -1,0 +1,14 @@
+{
+    "env": [
+        {
+            "PANE_RESIZE_ANYWHERE": "$HOUDINI_PACKAGE_PATH/houdini"
+        },
+        {
+            "PYTHONPATH": {
+                "value": "$PANE_RESIZE_ANYWHERE/python",
+                "method": "prepend"
+            }
+        }
+    ],
+    "hpath": "$PANE_RESIZE_ANYWHERE"
+}

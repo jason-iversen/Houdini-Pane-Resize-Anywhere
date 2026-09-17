@@ -10,7 +10,7 @@ border follows the mouse. No more hunting for the thin divider between panes.
 
 - **Ctrl + Alt + right-drag** near any pane border resizes the split that
   owns that border. Press near a corner to drag both splits at once.
-- The grab zone is the outer quarter of the pane on each side (configurable).
+- The grab zone is the outer 35% of the pane on each side (configurable).
 - Borders that are window edges (nothing to resize) are ignored and the click
   passes through to Houdini as normal.
 - The cursor changes to a resize arrow while the modifiers are held, showing
@@ -22,21 +22,43 @@ rather than using a per-pane-type hook such as `nodegraphhooks`.
 
 ## Install
 
-1. Copy `pane_resize_anywhere.py` to `$HOUDINI_USER_PREF_DIR/scripts/python/`
-   (on Windows this is usually `Documents\houdiniXX.X\scripts\python\`).
-2. Add the two lines from `pythonrc.py` to
-   `$HOUDINI_USER_PREF_DIR/scripts/pythonrc.py` (create the file if it does
-   not exist):
+This repository is a [Houdini package](https://www.sidefx.com/docs/houdini/ref/plugins.html),
+so nothing needs to be copied into your Houdini preferences.
 
-   ```python
-   import pane_resize_anywhere
-   pane_resize_anywhere.install()
+1. Clone or download this repository somewhere permanent.
+2. Create `$HOUDINI_USER_PREF_DIR/packages/pane_resize_anywhere.json`
+   (on Windows `$HOUDINI_USER_PREF_DIR` is usually `Documents\houdiniXX.X`)
+   containing the path to the repository:
+
+   ```json
+   { "package_path": "C:/path/to/Houdini Pane Resize Anywhere" }
    ```
 
-3. Restart Houdini.
+   This makes Houdini load the package file shipped in the repository, which
+   adds `houdini/` to `HOUDINI_PATH` and `houdini/python/` to `PYTHONPATH`.
 
-`install()` is a no-op outside the UI (hython, hbatch) and defers itself until
-the Qt application exists, so it is safe to call from `pythonrc.py`.
+3. Restart Houdini. `houdini/pythonX.Ylibs/uiready.py` installs the handler
+   as soon as the UI is ready.
+
+Alternatively, copy `pane_resize_anywhere.json` into your `packages` folder
+and change `PANE_RESIZE_ANYWHERE` to the absolute path of the repository's
+`houdini/` folder.
+
+### Layout
+
+```
+Houdini Pane Resize Anywhere/
+├── pane_resize_anywhere.json        # package file (HOUDINI_PATH + PYTHONPATH)
+└── houdini/                         # added to HOUDINI_PATH
+    ├── python/
+    │   └── pane_resize_anywhere.py  # the event handler
+    ├── python3.11libs/uiready.py    # startup hook, Houdini 20.5 / 21 (Python 3.11)
+    └── python3.13libs/uiready.py    # startup hook, Houdini 22 (Python 3.13)
+```
+
+Houdini only runs the `uiready.py` that matches its own Python version. For a
+Houdini build with a different Python, add a `pythonX.Ylibs/uiready.py` with
+the same two lines.
 
 ### Optional shelf tool
 
@@ -62,7 +84,7 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | --- | --- | --- |
 | `MODIFIERS` | `Ctrl + Alt` | Modifier keys that must be held (and no others). Ctrl+Alt avoids Houdini's own Alt/Space viewport navigation. |
 | `BUTTON` | Right mouse | Mouse button that starts the drag. |
-| `EDGE_MARGIN` | `0.25` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
+| `EDGE_MARGIN` | `0.35` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
 | `MIN_FRACTION` | `0.02` | Stops a split from being collapsed completely. |
 | `SHOW_HOVER_CURSOR` | `True` | Show a resize cursor while the modifiers are held. |
 

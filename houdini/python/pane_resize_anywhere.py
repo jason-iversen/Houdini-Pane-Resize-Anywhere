@@ -11,14 +11,17 @@ of using a per-pane-type hook such as nodegraphhooks.
 
 Install
 -------
-Copy this file to  $HOUDINI_USER_PREF_DIR/scripts/python/pane_resize_anywhere.py
-and add to        $HOUDINI_USER_PREF_DIR/scripts/pythonrc.py:
+This repository is a Houdini package.  Either point Houdini at it with a
+one-line package file in $HOUDINI_USER_PREF_DIR/packages/:
 
-    import pane_resize_anywhere
-    pane_resize_anywhere.install()
+    { "package_path": "C:/path/to/Houdini Pane Resize Anywhere" }
 
+or copy pane_resize_anywhere.json there and set PANE_RESIZE_ANYWHERE to the
+absolute path of this repository's houdini/ folder.  Restart Houdini.
+
+houdini/pythonX.Ylibs/uiready.py calls install() once the UI is ready.
 install() is a no-op outside the UI (hython, hbatch) and defers itself until
-the Qt application exists, so it is safe to call from pythonrc.py.
+the Qt application exists, so it is also safe to call from pythonrc.py.
 A shelf tool can call pane_resize_anywhere.toggle() to switch it on and off.
 """
 

@@ -1,2 +1,0 @@
-import pane_resize_anywhere
-pane_resize_anywhere.install()
