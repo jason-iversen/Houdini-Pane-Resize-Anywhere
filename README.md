@@ -10,7 +10,7 @@ border follows the mouse. No more hunting for the thin divider between panes.
 
 - **Ctrl + Alt + right-drag** near any pane border resizes the split that
   owns that border. Press near a corner to drag both splits at once.
-- The grab zone is the outer 35% of the pane on each side (configurable).
+- The grab zone is the outer 40% of the pane on each side (configurable).
 - Borders that are window edges (nothing to resize) are ignored and the click
   passes through to Houdini as normal.
 - The cursor changes to a resize arrow while the modifiers are held, showing
@@ -86,7 +86,7 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | --- | --- | --- |
 | `MODIFIERS` | `Ctrl + Alt` | Modifier keys that must be held (and no others). Ctrl+Alt avoids Houdini's own Alt/Space viewport navigation. |
 | `BUTTON` | Right mouse | Mouse button that starts the drag. |
-| `EDGE_MARGIN` | `0.35` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
+| `EDGE_MARGIN` | `0.4` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
 | `MIN_FRACTION` | `0.02` | Stops a split from being collapsed completely. |
 | `SHOW_HOVER_CURSOR` | `True` | Show a resize cursor while the modifiers are held. |
 | `DRAG_MODE` | `"live"` | `"live"` moves the splits during the drag, throttled to `DRAG_INTERVAL_MS`. `"preview"` draws a rubber band during the drag and moves the splits once, on release. |
@@ -110,6 +110,12 @@ split once per move event:
   when the mouse comes up, so nothing redraws until then. The band is a
   frameless top level window so it also draws over the viewport, which is a
   native OpenGL window that would otherwise cover a plain child widget.
+
+A corner drag moves two dividers, one of them nested inside the other's split.
+The nested split is bounded by the outer divider, so the inner band does not
+keep a fixed length: its end follows the outer band as that one moves, and the
+two stay joined at the corner. The outer band spans its own split whatever the
+inner divider does, so it keeps its full length.
 
 ## Requirements
 

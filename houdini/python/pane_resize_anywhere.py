@@ -52,7 +52,7 @@ BUTTON = Qt.RightButton
 
 # How close to a pane border the press must be.  < 1 is a fraction of the
 # pane's width/height (0.5 == anywhere in the pane); >= 1 is fixed pixels.
-EDGE_MARGIN = 0.35
+EDGE_MARGIN = 0.4
 
 # Keep splits from collapsing completely.
 MIN_FRACTION = 0.02
@@ -153,14 +153,15 @@ def _edges_near(rect, pos):
 class _AxisDrag(object):
     """One split being dragged along one axis."""
 
-    __slots__ = ("child", "horizontal", "start_fraction", "length", "rect")
+    __slots__ = ("child", "horizontal", "start_fraction", "length", "rect", "edge")
 
-    def __init__(self, child, horizontal, start_fraction, length, rect):
+    def __init__(self, child, horizontal, start_fraction, length, rect, edge):
         self.child = child  # a child of the split; set/getSplitFraction act on its parent
         self.horizontal = horizontal
         self.start_fraction = start_fraction
         self.length = max(float(length), 1.0)
         self.rect = rect  # the split's screen rect, for the rubber band
+        self.edge = edge  # which border of the pressed pane this divider is
 
     def fraction_for(self, delta):
         # The fraction is child 0's share, so the divider always moves with
@@ -177,16 +178,41 @@ class _AxisDrag(object):
         except hou.OperationFailed:
             pass
 
+    def divider_pos(self, delta):
+        """Screen x of a vertical divider, or y of a horizontal one."""
+        f = self.fraction_for(delta)
+        if self.horizontal:
+            return int(round(self.rect.left() + f * self.length))
+        # y-up: child 0's share is measured from the bottom of the split.
+        return int(round(self.rect.bottom() - f * self.length))
+
     def band_rect(self, delta):
         """Screen rect of the divider as this delta would leave it."""
-        f = self.fraction_for(delta)
         r, t = self.rect, max(int(BAND_THICKNESS), 1)
+        pos = self.divider_pos(delta)
         if self.horizontal:
-            x = int(round(r.left() + f * self.length))
-            return QtCore.QRect(x - t // 2, r.top(), t, r.height())
-        # y-up: child 0's share is measured from the bottom of the split.
-        y = int(round(r.bottom() - f * self.length))
-        return QtCore.QRect(r.left(), y - t // 2, r.width(), t)
+            return QtCore.QRect(pos - t // 2, r.top(), t, r.height())
+        return QtCore.QRect(r.left(), pos - t // 2, r.width(), t)
+
+
+def _join_band(rect, outer, outer_edge):
+    """Stretch an inner band to meet the outer band of a corner drag.
+
+    A corner drag moves two dividers, one of them nested inside the other's
+    split.  The nested split is bounded by the outer divider, so its divider
+    ends wherever that one currently is: the inner band's length is not fixed,
+    it follows the outer band instead of sliding out of contact with it.
+    """
+    joined = QtCore.QRect(rect)
+    if outer_edge == _LEFT:
+        joined.setLeft(outer.left())
+    elif outer_edge == _RIGHT:
+        joined.setRight(outer.right())
+    elif outer_edge == _TOP:
+        joined.setTop(outer.top())
+    else:
+        joined.setBottom(outer.bottom())
+    return joined if joined.isValid() else rect
 
 
 def _find_split_for_edge(pane, edge):
@@ -212,7 +238,7 @@ def _find_split_for_edge(pane, edge):
             except hou.OperationFailed:
                 return None
             length = rect.width() if want_horizontal else rect.height()
-            return _AxisDrag(child, want_horizontal, start, length, rect)
+            return _AxisDrag(child, want_horizontal, start, length, rect, edge)
         child, parent = parent, parent.getSplitParent()
     return None  # reached the window edge: nothing to resize
 
@@ -234,11 +260,12 @@ def _drags_at(pos):
     for edge in _edges_near(rect, pos):
         drag = _find_split_for_edge(pane, edge)
         if drag is not None:
-            drags.append((edge, drag))
+            drags.append(drag)
     return drags
 
 
-def _cursor_for(edges):
+def _cursor_for(drags):
+    edges = [drag.edge for drag in drags]
     horizontal = [e for e in edges if e in (_LEFT, _RIGHT)]
     vertical = [e for e in edges if e in (_TOP, _BOTTOM)]
     if horizontal and vertical:
@@ -308,12 +335,29 @@ class _PaneResizeFilter(QtCore.QObject):
 
     # -- rubber band -----------------------------------------------------
 
+    def _band_rects(self):
+        """Where the bands go, joined at the corner when two are dragged.
+
+        One of a corner drag's two splits is nested inside the other, which is
+        the one whose rect contains the other's.  The outer divider spans its
+        whole split whatever the inner one does, so only the inner band has to
+        follow, and it does so on the side the outer divider is on.
+        """
+        rects = [drag.band_rect(self._delta) for drag in self._drags]
+        if len(rects) == 2:
+            a, b = self._drags
+            if a.rect.contains(b.rect):
+                rects[1] = _join_band(rects[1], rects[0], a.edge)
+            elif b.rect.contains(a.rect):
+                rects[0] = _join_band(rects[0], rects[1], b.edge)
+        return rects
+
     def _show_bands(self):
-        for i, drag in enumerate(self._drags):
+        for i, rect in enumerate(self._band_rects()):
             while len(self._bands) <= i:
                 self._bands.append(_RubberBand())
             band = self._bands[i]
-            band.setGeometry(drag.band_rect(self._delta))
+            band.setGeometry(rect)
             if not band.isVisible():
                 band.show()
                 band.raise_()
@@ -387,11 +431,11 @@ class _PaneResizeFilter(QtCore.QObject):
         found = _drags_at(pos)
         if not found:
             return False
-        self._drags = [drag for _, drag in found]
+        self._drags = found
         self._start = pos
         self._delta = QtCore.QPoint(0, 0)
         self._since_apply.start()
-        self._set_cursor(_cursor_for([edge for edge, _ in found]))
+        self._set_cursor(_cursor_for(found))
         if DRAG_MODE == "preview":
             self._show_bands()
         return True
@@ -405,7 +449,7 @@ class _PaneResizeFilter(QtCore.QObject):
             return False
         if _flag_int(event.buttons()) == 0 and _modifiers_match(event.modifiers()):
             found = _drags_at(_global_pos(event))
-            self._set_cursor(_cursor_for([e for e, _ in found]) if found else None)
+            self._set_cursor(_cursor_for(found) if found else None)
         elif self._cursor_shape is not None:
             self._set_cursor(None)
         return False
