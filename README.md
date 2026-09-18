@@ -119,8 +119,7 @@ inner divider does, so it keeps its full length.
 
 ## Requirements
 
-- Houdini 20.5 or newer (PySide6). Older PySide2 builds are supported by the
-  import fallback but have not been tested.
+- Houdini 20.0 or newer. 
 - Uses only public HOM APIs: `hou.ui.paneUnderCursor()`,
   `hou.Pane.qtScreenGeometry()`, `getSplitParent()` / `getSplitChild()` and
   `getSplitFraction()` / `setSplitFraction()`.
