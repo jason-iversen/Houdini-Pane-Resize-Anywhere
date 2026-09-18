@@ -5,6 +5,11 @@ pixels of one of its borders, then drag.  The split that owns that border
 follows the mouse.  Pressing near a corner drags both splits at once.
 Borders that are window edges (nothing to resize) are ignored.
 
+Moving a split relayouts the panes and makes every visible 3D viewport
+redraw, so DRAG_MODE decides how often that happens: "live" moves the splits
+at most once every DRAG_INTERVAL_MS, "preview" draws a rubber band during the
+drag and moves them once, on release.
+
 It works in every pane type (viewport, network editor, parameters, Python
 panels, ...) because it filters Qt's application-level mouse events instead
 of using a per-pane-type hook such as nodegraphhooks.
@@ -55,6 +60,21 @@ MIN_FRACTION = 0.02
 # Change the mouse cursor while MODIFIERS are held to show what a press would
 # grab.  Costs one hou.ui.paneUnderCursor() call per mouse move while held.
 SHOW_HOVER_CURSOR = True
+
+# How the drag updates the layout.  Moving a split relayouts the panes and
+# makes every visible 3D viewport redraw, which is the one expensive thing a
+# resize does, so neither mode does it once per mouse move:
+#   "live"    -- move the splits during the drag, but at most once every
+#                DRAG_INTERVAL_MS.
+#   "preview" -- draw a rubber band where the divider would land and move the
+#                splits once, on release.  Nothing redraws during the drag.
+DRAG_MODE = "live"
+
+# Shortest interval in milliseconds between split updates in "live" mode.
+DRAG_INTERVAL_MS = 30
+
+# Thickness in pixels of the "preview" rubber band.
+BAND_THICKNESS = 4
 
 # --------------------------------------------------------------- internals --
 
@@ -133,26 +153,40 @@ def _edges_near(rect, pos):
 class _AxisDrag(object):
     """One split being dragged along one axis."""
 
-    __slots__ = ("child", "horizontal", "start_fraction", "length")
+    __slots__ = ("child", "horizontal", "start_fraction", "length", "rect")
 
-    def __init__(self, child, horizontal, start_fraction, length):
+    def __init__(self, child, horizontal, start_fraction, length, rect):
         self.child = child  # a child of the split; set/getSplitFraction act on its parent
         self.horizontal = horizontal
         self.start_fraction = start_fraction
         self.length = max(float(length), 1.0)
+        self.rect = rect  # the split's screen rect, for the rubber band
 
-    def apply(self, delta):
+    def fraction_for(self, delta):
         # The fraction is child 0's share, so the divider always moves with
         # the mouse no matter which side of it the drag started on.  Houdini's
         # UI is y-up, so a top/bottom split's fraction grows as the divider
         # moves up the screen, i.e. against Qt's y-down mouse delta.
         d = delta.x() if self.horizontal else -delta.y()
         f = self.start_fraction + d / self.length
-        f = max(MIN_FRACTION, min(1.0 - MIN_FRACTION, f))
+        return max(MIN_FRACTION, min(1.0 - MIN_FRACTION, f))
+
+    def apply(self, delta):
         try:
-            self.child.setSplitFraction(f)
+            self.child.setSplitFraction(self.fraction_for(delta))
         except hou.OperationFailed:
             pass
+
+    def band_rect(self, delta):
+        """Screen rect of the divider as this delta would leave it."""
+        f = self.fraction_for(delta)
+        r, t = self.rect, max(int(BAND_THICKNESS), 1)
+        if self.horizontal:
+            x = int(round(r.left() + f * self.length))
+            return QtCore.QRect(x - t // 2, r.top(), t, r.height())
+        # y-up: child 0's share is measured from the bottom of the split.
+        y = int(round(r.bottom() - f * self.length))
+        return QtCore.QRect(r.left(), y - t // 2, r.width(), t)
 
 
 def _find_split_for_edge(pane, edge):
@@ -178,7 +212,7 @@ def _find_split_for_edge(pane, edge):
             except hou.OperationFailed:
                 return None
             length = rect.width() if want_horizontal else rect.height()
-            return _AxisDrag(child, want_horizontal, start, length)
+            return _AxisDrag(child, want_horizontal, start, length, rect)
         child, parent = parent, parent.getSplitParent()
     return None  # reached the window edge: nothing to resize
 
@@ -217,13 +251,46 @@ def _cursor_for(edges):
     return Qt.SizeVerCursor
 
 
+class _RubberBand(QtWidgets.QWidget):
+    """A thin frameless window showing where a divider would land.
+
+    It is a top level window rather than a child widget so that it also draws
+    over the 3D viewport, which is a native OpenGL window and would otherwise
+    stack above any sibling widget.
+    """
+
+    def __init__(self):
+        super(_RubberBand, self).__init__(
+            None,
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus
+            | Qt.WindowTransparentForInput,
+        )
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+
+    def paintEvent(self, event):
+        color = QtWidgets.QApplication.palette().color(QtGui.QPalette.Highlight)
+        painter = QtGui.QPainter(self)
+        painter.fillRect(self.rect(), color)
+        painter.end()
+
+
 class _PaneResizeFilter(QtCore.QObject):
     def __init__(self):
         super(_PaneResizeFilter, self).__init__()
         self._drags = []            # [_AxisDrag] while a drag is in progress
         self._start = None          # QPoint where the drag began
+        self._delta = None          # newest mouse delta, not applied yet
         self._cursor_shape = None   # override cursor currently shown, if any
         self._swallow_context_menu = False
+        self._bands = []            # rubber bands, kept and reused between drags
+        self._timer = QtCore.QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._flush)
+        self._since_apply = QtCore.QElapsedTimer()
 
     # -- cursor ----------------------------------------------------------
 
@@ -238,6 +305,51 @@ class _PaneResizeFilter(QtCore.QObject):
         else:
             app.changeOverrideCursor(QtGui.QCursor(shape))
         self._cursor_shape = shape
+
+    # -- rubber band -----------------------------------------------------
+
+    def _show_bands(self):
+        for i, drag in enumerate(self._drags):
+            while len(self._bands) <= i:
+                self._bands.append(_RubberBand())
+            band = self._bands[i]
+            band.setGeometry(drag.band_rect(self._delta))
+            if not band.isVisible():
+                band.show()
+                band.raise_()
+
+    def _hide_bands(self):
+        for band in self._bands:
+            band.hide()
+
+    def _destroy_bands(self):
+        for band in self._bands:
+            band.hide()
+            band.deleteLater()
+        self._bands = []
+
+    # -- applying the drag -----------------------------------------------
+
+    def _queue(self, delta):
+        """Take a new mouse position; move the splits or the rubber band."""
+        self._delta = delta
+        if DRAG_MODE == "preview":
+            self._show_bands()
+            return
+        left = DRAG_INTERVAL_MS - self._since_apply.elapsed()
+        if left <= 0:
+            self._flush()
+        elif not self._timer.isActive():
+            self._timer.start(int(left))
+
+    def _flush(self):
+        """Move the splits to the newest mouse position."""
+        self._timer.stop()
+        if not self._drags or self._delta is None:
+            return
+        for drag in self._drags:
+            drag.apply(self._delta)
+        self._since_apply.restart()
 
     # -- event filter ----------------------------------------------------
 
@@ -277,14 +389,16 @@ class _PaneResizeFilter(QtCore.QObject):
             return False
         self._drags = [drag for _, drag in found]
         self._start = pos
+        self._delta = QtCore.QPoint(0, 0)
+        self._since_apply.start()
         self._set_cursor(_cursor_for([edge for edge, _ in found]))
+        if DRAG_MODE == "preview":
+            self._show_bands()
         return True
 
     def _on_move(self, event):
         if self._drags:
-            delta = _global_pos(event) - self._start
-            for drag in self._drags:
-                drag.apply(delta)
+            self._queue(_global_pos(event) - self._start)
             return True
 
         if not SHOW_HOVER_CURSOR:
@@ -299,6 +413,9 @@ class _PaneResizeFilter(QtCore.QObject):
     def _on_release(self, event):
         if not self._drags or event.button() != BUTTON:
             return False
+        self._timer.stop()
+        self._hide_bands()
+        # The exact final position, unthrottled and never merely previewed.
         for drag in self._drags:
             drag.apply(_global_pos(event) - self._start)
         self._end_drag()
@@ -306,8 +423,11 @@ class _PaneResizeFilter(QtCore.QObject):
         return True
 
     def _end_drag(self):
+        self._timer.stop()
         self._drags = []
         self._start = None
+        self._delta = None
+        self._hide_bands()
         self._set_cursor(None)
 
 
@@ -345,6 +465,7 @@ def uninstall():
     if app is not None:
         app.removeEventFilter(_filter)
     _filter._end_drag()
+    _filter._destroy_bands()
     _filter = None
 
 
