@@ -13,10 +13,12 @@ border follows the mouse. No more hunting for the thin divider between panes.
 - The grab zone is the outer 40% of the pane on each side (configurable).
 - Borders that are window edges (nothing to resize) are ignored and the click
   passes through to Houdini as normal.
-- The cursor changes to a resize arrow while the modifiers are held, showing
-  what a press would grab.
-- Moving a split is throttled, so a 3D viewport does not redraw once per
-  mouse move (see [Drag performance](#drag-performance)).
+- While the modifiers are held, the cursor changes to a resize arrow and a
+  dimmed band is drawn over each border a press would grab, so you can see
+  what you are about to resize before pressing anything.
+- A band follows the mouse exactly during the drag, while moving the splits
+  themselves is throttled, so a 3D viewport does not redraw once per mouse
+  move (see [Drag performance](#drag-performance)).
 
 It works in every pane type — viewport, network editor, parameters, Python
 panels, and so on — because it filters Qt's application-level mouse events
@@ -89,27 +91,33 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | `EDGE_MARGIN` | `0.4` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
 | `MIN_FRACTION` | `0.02` | Stops a split from being collapsed completely. |
 | `SHOW_HOVER_CURSOR` | `True` | Show a resize cursor while the modifiers are held. |
+| `SHOW_HOVER_BANDS` | `True` | Draw a band over each border a press would grab while the modifiers are held. |
+| `HOVER_BAND_OPACITY` | `0.45` | Opacity of those candidate bands. The bands of a drag are always opaque. |
 | `DRAG_MODE` | `"live"` | `"live"` moves the splits during the drag, throttled to `DRAG_INTERVAL_MS`. `"preview"` draws a rubber band during the drag and moves the splits once, on release. |
 | `DRAG_INTERVAL_MS` | `30` | Shortest interval between split updates in `"live"` mode (30 ms ≈ 33 updates/second). |
-| `BAND_THICKNESS` | `4` | Thickness in pixels of the `"preview"` rubber band. |
+| `BAND_THICKNESS` | `4` | Thickness in pixels of a rubber band. |
 
 ### Drag performance
 
 Moving a split relayouts the panes, which makes every visible 3D viewport
 redraw. That is the one expensive thing a resize does, and a mouse can easily
 send several hundred move events per second, so the handler never moves a
-split once per move event:
+split once per move event. Both modes draw the rubber bands, which follow the
+mouse exactly and cost nothing but a 4 pixel window move; they differ in how
+often the panes themselves are relayouted:
 
 - **`DRAG_MODE = "live"`** (default) applies the newest mouse position at most
   once every `DRAG_INTERVAL_MS`, and applies the exact final position on
   release. Intermediate moves are coalesced rather than queued, so the layout
-  never lags behind the mouse. Raise `DRAG_INTERVAL_MS` if a heavy scene still
-  stutters.
+  never lags behind the mouse by more than one interval. Raise
+  `DRAG_INTERVAL_MS` if a heavy scene still stutters.
 - **`DRAG_MODE = "preview"`** does not touch the layout during the drag at all.
-  It shows a thin band where the divider would land and moves the splits once,
-  when the mouse comes up, so nothing redraws until then. The band is a
-  frameless top level window so it also draws over the viewport, which is a
-  native OpenGL window that would otherwise cover a plain child widget.
+  The bands show where the dividers would land and the splits move once, when
+  the mouse comes up, so nothing else redraws until then.
+
+A band is a frameless top level window, so it also draws over the viewport,
+which is a native OpenGL window that would otherwise cover a plain child
+widget.
 
 A corner drag moves two dividers, one of them nested inside the other's split.
 The nested split is bounded by the outer divider, so the inner band does not

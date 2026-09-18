@@ -61,24 +61,34 @@ MIN_FRACTION = 0.02
 # grab.  Costs one hou.ui.paneUnderCursor() call per mouse move while held.
 SHOW_HOVER_CURSOR = True
 
-# How the drag updates the layout.  Moving a split relayouts the panes and
-# makes every visible 3D viewport redraw, which is the one expensive thing a
-# resize does, so neither mode does it once per mouse move:
+# Also draw the rubber bands over the borders a press would grab while
+# MODIFIERS are held, before any drag starts.
+SHOW_HOVER_BANDS = True
+
+# Opacity of those candidate bands.  The bands of a drag are always opaque.
+HOVER_BAND_OPACITY = 0.45
+
+# How the drag updates the layout.  Both modes draw the rubber bands, which
+# follow the mouse exactly; the difference is how often the panes themselves
+# are relayouted.  That is the expensive part, because it makes every visible
+# 3D viewport redraw, so neither mode does it once per mouse move:
 #   "live"    -- move the splits during the drag, but at most once every
 #                DRAG_INTERVAL_MS.
-#   "preview" -- draw a rubber band where the divider would land and move the
-#                splits once, on release.  Nothing redraws during the drag.
+#   "preview" -- move the splits once, on release.  Nothing but the bands
+#                redraws during the drag.
 DRAG_MODE = "live"
 
 # Shortest interval in milliseconds between split updates in "live" mode.
 DRAG_INTERVAL_MS = 30
 
-# Thickness in pixels of the "preview" rubber band.
+# Thickness in pixels of a rubber band.
 BAND_THICKNESS = 4
 
 # --------------------------------------------------------------- internals --
 
 _LEFT, _RIGHT, _TOP, _BOTTOM = "left", "right", "top", "bottom"
+
+_ZERO = QtCore.QPoint(0, 0)  # "wherever the divider is now", for hover bands
 
 
 def _flag_int(flags):
@@ -215,6 +225,24 @@ def _join_band(rect, outer, outer_edge):
     return joined if joined.isValid() else rect
 
 
+def _band_rects(drags, delta):
+    """Where the bands go, joined at the corner when two are dragged.
+
+    One of a corner drag's two splits is nested inside the other, which is the
+    one whose rect contains the other's.  The outer divider spans its whole
+    split whatever the inner one does, so only the inner band has to follow,
+    and it does so on the side the outer divider is on.
+    """
+    rects = [drag.band_rect(delta) for drag in drags]
+    if len(rects) == 2:
+        a, b = drags
+        if a.rect.contains(b.rect):
+            rects[1] = _join_band(rects[1], rects[0], a.edge)
+        elif b.rect.contains(a.rect):
+            rects[0] = _join_band(rects[0], rects[1], b.edge)
+    return rects
+
+
 def _find_split_for_edge(pane, edge):
     """Walk up from pane to the split whose divider is this border of pane."""
     want_horizontal = edge in (_LEFT, _RIGHT)
@@ -297,6 +325,16 @@ class _RubberBand(QtWidgets.QWidget):
         )
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.opacity = 1.0  # Qt rounds windowOpacity(), so keep what was asked
+
+    def show_at(self, rect, opacity):
+        if self.opacity != opacity:
+            self.opacity = opacity
+            self.setWindowOpacity(opacity)
+        self.setGeometry(rect)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def paintEvent(self, event):
         color = QtWidgets.QApplication.palette().color(QtGui.QPalette.Highlight)
@@ -335,36 +373,29 @@ class _PaneResizeFilter(QtCore.QObject):
 
     # -- rubber band -----------------------------------------------------
 
-    def _band_rects(self):
-        """Where the bands go, joined at the corner when two are dragged.
-
-        One of a corner drag's two splits is nested inside the other, which is
-        the one whose rect contains the other's.  The outer divider spans its
-        whole split whatever the inner one does, so only the inner band has to
-        follow, and it does so on the side the outer divider is on.
-        """
-        rects = [drag.band_rect(self._delta) for drag in self._drags]
-        if len(rects) == 2:
-            a, b = self._drags
-            if a.rect.contains(b.rect):
-                rects[1] = _join_band(rects[1], rects[0], a.edge)
-            elif b.rect.contains(a.rect):
-                rects[0] = _join_band(rects[0], rects[1], b.edge)
-        return rects
-
-    def _show_bands(self):
-        for i, rect in enumerate(self._band_rects()):
+    def _show_bands(self, drags, delta, opacity=1.0):
+        rects = _band_rects(drags, delta)
+        for i, rect in enumerate(rects):
             while len(self._bands) <= i:
                 self._bands.append(_RubberBand())
-            band = self._bands[i]
-            band.setGeometry(rect)
-            if not band.isVisible():
-                band.show()
-                band.raise_()
+            self._bands[i].show_at(rect, opacity)
+        for band in self._bands[len(rects):]:  # a corner grab left for an edge
+            band.hide()
 
     def _hide_bands(self):
         for band in self._bands:
-            band.hide()
+            if band.isVisible():
+                band.hide()
+
+    def _clear_hover(self):
+        """Drop the candidate bands and cursor shown while MODIFIERS are held."""
+        self._set_cursor(None)
+        self._hide_bands()
+
+    def _hover_shown(self):
+        return self._cursor_shape is not None or any(
+            band.isVisible() for band in self._bands
+        )
 
     def _destroy_bands(self):
         for band in self._bands:
@@ -375,10 +406,11 @@ class _PaneResizeFilter(QtCore.QObject):
     # -- applying the drag -----------------------------------------------
 
     def _queue(self, delta):
-        """Take a new mouse position; move the splits or the rubber band."""
+        """Take a new mouse position: the bands always follow it, the splits
+        only in "live" mode, and then no more often than DRAG_INTERVAL_MS."""
         self._delta = delta
+        self._show_bands(self._drags, delta)
         if DRAG_MODE == "preview":
-            self._show_bands()
             return
         left = DRAG_INTERVAL_MS - self._since_apply.elapsed()
         if left <= 0:
@@ -412,9 +444,9 @@ class _PaneResizeFilter(QtCore.QObject):
                 # Windows synthesises a context-menu event on RMB release.
                 self._swallow_context_menu = False
                 return True
-            if et == QEvent.Type.KeyRelease and self._cursor_shape is not None and not self._drags:
+            if et == QEvent.Type.KeyRelease and not self._drags and self._hover_shown():
                 if not _modifiers_match(QtWidgets.QApplication.queryKeyboardModifiers()):
-                    self._set_cursor(None)
+                    self._clear_hover()
         except Exception:
             # Never let a bug here break Houdini's event loop; drop any drag.
             self._end_drag()
@@ -426,18 +458,19 @@ class _PaneResizeFilter(QtCore.QObject):
         if self._drags:
             return True  # another button during a drag: ignore it
         if event.button() != BUTTON or not _modifiers_match(event.modifiers()):
+            self._clear_hover()  # a click we do not take ends the hover preview
             return False
         pos = _global_pos(event)
         found = _drags_at(pos)
         if not found:
+            self._clear_hover()
             return False
         self._drags = found
         self._start = pos
-        self._delta = QtCore.QPoint(0, 0)
+        self._delta = _ZERO
         self._since_apply.start()
         self._set_cursor(_cursor_for(found))
-        if DRAG_MODE == "preview":
-            self._show_bands()
+        self._show_bands(found, self._delta)
         return True
 
     def _on_move(self, event):
@@ -445,13 +478,20 @@ class _PaneResizeFilter(QtCore.QObject):
             self._queue(_global_pos(event) - self._start)
             return True
 
-        if not SHOW_HOVER_CURSOR:
+        if not (SHOW_HOVER_CURSOR or SHOW_HOVER_BANDS):
             return False
         if _flag_int(event.buttons()) == 0 and _modifiers_match(event.modifiers()):
+            # What a press here would grab, drawn where it would grab it.
             found = _drags_at(_global_pos(event))
-            self._set_cursor(_cursor_for(found) if found else None)
-        elif self._cursor_shape is not None:
-            self._set_cursor(None)
+            if SHOW_HOVER_CURSOR:
+                self._set_cursor(_cursor_for(found) if found else None)
+            if SHOW_HOVER_BANDS:
+                if found:
+                    self._show_bands(found, _ZERO, HOVER_BAND_OPACITY)
+                else:
+                    self._hide_bands()
+        elif self._hover_shown():
+            self._clear_hover()
         return False
 
     def _on_release(self, event):
@@ -459,7 +499,7 @@ class _PaneResizeFilter(QtCore.QObject):
             return False
         self._timer.stop()
         self._hide_bands()
-        # The exact final position, unthrottled and never merely previewed.
+        # The exact final position, whatever the bands and the timer did.
         for drag in self._drags:
             drag.apply(_global_pos(event) - self._start)
         self._end_drag()
