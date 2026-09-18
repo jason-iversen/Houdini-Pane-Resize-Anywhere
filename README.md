@@ -4,7 +4,7 @@ KDE-style "resize anywhere" for SideFX Houdini panes. Hold a modifier, press
 the mouse anywhere near a pane's border, and drag — the split that owns that
 border follows the mouse. No more hunting for the thin divider between panes.
 
-**Demo:** https://youtu.be/bUvCURDZHEA
+**Demo:** https://youtu.be/-a2CH3XuB10
 
 ## How it works
 
