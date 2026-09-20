@@ -143,8 +143,7 @@ that should work is being dropped, raise `BORDER_SLOP`.
 
 ## Requirements
 
-- Houdini 20.5 or newer (PySide6), or Houdini 20.0 (PySide2/Qt5) through the
-  import fallback, which is in use.
+- Houdini 20.0 or newer. 
 - Uses only public HOM APIs: `hou.ui.paneUnderCursor()`,
   `hou.Pane.qtScreenGeometry()`, `getSplitParent()` / `getSplitChild()` and
   `getSplitFraction()` / `setSplitFraction()`.
