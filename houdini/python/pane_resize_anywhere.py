@@ -84,9 +84,31 @@ DRAG_INTERVAL_MS = 30
 # Thickness in pixels of a rubber band.
 BAND_THICKNESS = 4
 
+# How far a divider may sit from the pane border it was found for, and how far
+# a split's rect may fall short of containing the pane, in pixels.  Walking up
+# the pane tree reports a split but cannot prove it is the pane's neighbour,
+# and Houdini sometimes hands back a rect that no longer matches the screen, so
+# both are checked before a split is drawn or dragged; what fails either one
+# puts a band across the middle of the window instead of on a border.  Raise it
+# if your theme has unusually wide divider gaps.
+BORDER_SLOP = 12
+
 # --------------------------------------------------------------- internals --
 
 _LEFT, _RIGHT, _TOP, _BOTTOM = "left", "right", "top", "bottom"
+
+_MODIFIER_NAMES = (
+    (Qt.ControlModifier, "Ctrl"),
+    (Qt.AltModifier, "Alt"),
+    (Qt.ShiftModifier, "Shift"),
+    (Qt.MetaModifier, "Meta"),
+)
+
+_BUTTON_NAMES = (
+    (Qt.LeftButton, "left"),
+    (Qt.MiddleButton, "middle"),
+    (Qt.RightButton, "right"),
+)
 
 _ZERO = QtCore.QPoint(0, 0)  # "wherever the divider is now", for hover bands
 
@@ -140,6 +162,32 @@ def _is_side_by_side(split):
     # offsets (rather than testing one for zero) stays correct when a child is
     # stowed to a few pixels wide.
     return (r1.left() - r0.left()) > (r1.top() - r0.top())
+
+
+def _border_pos(rect, edge):
+    """Screen x or y of one border of a pane."""
+    if edge == _LEFT:
+        return rect.left()
+    if edge == _RIGHT:
+        return rect.right()
+    if edge == _TOP:
+        return rect.top()
+    return rect.bottom()
+
+
+def _owns_border(drag, rect, edge):
+    """True if this drag's split really is that border of a pane with this rect.
+
+    A split that owns a pane's border contains that pane and puts its divider
+    on that border.  Either test failing means the geometry Houdini reported
+    does not hang together -- a stale rect, a child order read backwards -- and
+    the split is not the neighbour the walk up the tree took it for.
+    """
+    room = drag.rect.adjusted(-BORDER_SLOP, -BORDER_SLOP, BORDER_SLOP, BORDER_SLOP)
+    return (
+        room.contains(rect)
+        and abs(drag.divider_pos(_ZERO) - _border_pos(rect, edge)) <= BORDER_SLOP
+    )
 
 
 def _edges_near(rect, pos):
@@ -287,7 +335,7 @@ def _drags_at(pos):
     drags = []
     for edge in _edges_near(rect, pos):
         drag = _find_split_for_edge(pane, edge)
-        if drag is not None:
+        if drag is not None and _owns_border(drag, rect, edge):
             drags.append(drag)
     return drags
 
@@ -557,11 +605,25 @@ def is_installed():
     return _filter is not None
 
 
+def shortcut():
+    """MODIFIERS and BUTTON as text, e.g. "Ctrl+Alt+right-drag"."""
+    mods = [name for flag, name in _MODIFIER_NAMES
+            if _flag_int(MODIFIERS) & _flag_int(flag)]
+    button = "mouse"
+    for flag, name in _BUTTON_NAMES:
+        if _flag_int(BUTTON) == _flag_int(flag):
+            button = name
+    return "+".join(mods + [button + "-drag"])
+
+
 def toggle():
     """Shelf-tool helper: switch the handler on or off and report the state."""
     if is_installed():
         uninstall()
-        hou.ui.setStatusMessage("Pane resize-anywhere: off")
+        hou.ui.setStatusMessage("Pane resize-anywhere off")
     else:
         install()
-        hou.ui.setStatusMessage("Pane resize-anywhere: on")
+        hou.ui.setStatusMessage(
+            "Pane resize-anywhere on: %s near a pane border resizes it"
+            % shortcut()
+        )

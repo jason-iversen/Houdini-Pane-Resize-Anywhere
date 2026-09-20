@@ -12,7 +12,9 @@ border follows the mouse. No more hunting for the thin divider between panes.
   owns that border. Press near a corner to drag both splits at once.
 - The grab zone is the outer 40% of the pane on each side (configurable).
 - Borders that are window edges (nothing to resize) are ignored and the click
-  passes through to Houdini as normal.
+  passes through to Houdini as normal. So is any split whose divider does not
+  actually land on the border it was found for (see
+  [Troubleshooting](#troubleshooting)).
 - While the modifiers are held, the cursor changes to a resize arrow and a
   dimmed band is drawn over each border a press would grab, so you can see
   what you are about to resize before pressing anything.
@@ -73,6 +75,9 @@ import pane_resize_anywhere
 pane_resize_anywhere.toggle()
 ```
 
+It reports the new state in the status bar, naming the current shortcut when
+it switches on, so a rebound `MODIFIERS` or `BUTTON` is never a guess.
+
 ### Reloading during development
 
 ```python
@@ -96,6 +101,7 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | `DRAG_MODE` | `"live"` | `"live"` moves the splits during the drag, throttled to `DRAG_INTERVAL_MS`. `"preview"` draws a rubber band during the drag and moves the splits once, on release. |
 | `DRAG_INTERVAL_MS` | `30` | Shortest interval between split updates in `"live"` mode (30 ms ≈ 33 updates/second). |
 | `BAND_THICKNESS` | `4` | Thickness in pixels of a rubber band. |
+| `BORDER_SLOP` | `12` | How far a divider may sit from the border it was found for, and how far a split's rect may fall short of containing the pane, before that split is dropped. |
 
 ### Drag performance
 
@@ -124,6 +130,16 @@ The nested split is bounded by the outer divider, so the inner band does not
 keep a fixed length: its end follows the outer band as that one moves, and the
 two stay joined at the corner. The outer band spans its own split whatever the
 inner divider does, so it keeps its full length.
+
+## Troubleshooting
+
+**A border will not grab.** Walking up the pane tree reports a split but
+cannot prove it is the pane's neighbour, and the geometry Houdini hands back
+does not always match what is on screen. A split that owns a pane's border
+contains that pane and puts its divider on that border, so both are checked
+and whatever fails either one is dropped rather than drawn — better a border
+that does not respond than a band across the middle of the window. If a border
+that should work is being dropped, raise `BORDER_SLOP`.
 
 ## Requirements
 
