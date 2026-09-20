@@ -84,12 +84,13 @@ DRAG_INTERVAL_MS = 30
 # Thickness in pixels of a rubber band.
 BAND_THICKNESS = 4
 
-# How far a divider may sit from the pane border it was found for and still
-# count as that border, in pixels.  A split whose divider lands further away
-# than this is dropped: walking up the pane tree can reach a split that is not
-# actually the pane's neighbour, and drawing that one puts a band across the
-# middle of the screen, nowhere near the pane the cursor is in.  Raise it if
-# your theme has unusually wide divider gaps.
+# How far a divider may sit from the pane border it was found for, and how far
+# a split's rect may fall short of containing the pane, in pixels.  Walking up
+# the pane tree reports a split but cannot prove it is the pane's neighbour,
+# and Houdini sometimes hands back a rect that no longer matches the screen, so
+# both are checked before a split is drawn or dragged; what fails either one
+# puts a band across the middle of the window instead of on a border.  Raise it
+# if your theme has unusually wide divider gaps.
 BORDER_SLOP = 12
 
 # --------------------------------------------------------------- internals --
@@ -161,9 +162,21 @@ def _border_pos(rect, edge):
     return rect.bottom()
 
 
-def _on_border(drag, rect, edge):
-    """True if this drag's divider really is that border of the pane."""
-    return abs(drag.divider_pos(_ZERO) - _border_pos(rect, edge)) <= BORDER_SLOP
+def _rejection(drag, rect, edge):
+    """Why this drag cannot be that border of the pane, or None if it can.
+
+    A split that owns a pane's border contains that pane and puts its divider
+    on that border.  Either test failing means the geometry Houdini reported
+    does not hang together -- a stale rect, a child order read backwards -- and
+    the split is not the neighbour the walk up the tree took it for.
+    """
+    room = drag.rect.adjusted(-BORDER_SLOP, -BORDER_SLOP, BORDER_SLOP, BORDER_SLOP)
+    if not room.contains(rect):
+        return "its split does not contain the pane"
+    off = drag.divider_pos(_ZERO) - _border_pos(rect, edge)
+    if abs(off) > BORDER_SLOP:
+        return "its divider is %+d px off the border" % off
+    return None
 
 
 def _edges_near(rect, pos):
@@ -311,9 +324,7 @@ def _drags_at(pos):
     drags = []
     for edge in _edges_near(rect, pos):
         drag = _find_split_for_edge(pane, edge)
-        # The walk can only report a split, not prove it is this pane's
-        # neighbour, so check that its divider lands on the border it claims.
-        if drag is not None and _on_border(drag, rect, edge):
+        if drag is not None and _rejection(drag, rect, edge) is None:
             drags.append(drag)
     return drags
 
@@ -606,10 +617,10 @@ def debug(pos=None):
         if drag is None:
             print("%-11s no split above this border (window edge)" % edge)
             continue
+        why = _rejection(drag, rect, edge)
         print("%-11s divider at %d, border at %d, split rect %s -> %s"
               % (edge, drag.divider_pos(_ZERO), _border_pos(rect, edge),
-                 drag.rect,
-                 "used" if _on_border(drag, rect, edge) else "DROPPED, see above"))
+                 drag.rect, "used" if why is None else "DROPPED: " + why))
 
     print("ancestors:")
     child, parent = pane, pane.getSplitParent()

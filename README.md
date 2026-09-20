@@ -98,7 +98,7 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | `DRAG_MODE` | `"live"` | `"live"` moves the splits during the drag, throttled to `DRAG_INTERVAL_MS`. `"preview"` draws a rubber band during the drag and moves the splits once, on release. |
 | `DRAG_INTERVAL_MS` | `30` | Shortest interval between split updates in `"live"` mode (30 ms ≈ 33 updates/second). |
 | `BAND_THICKNESS` | `4` | Thickness in pixels of a rubber band. |
-| `BORDER_SLOP` | `12` | How far a divider may sit from the border it was found for and still count as that border. Splits further away are dropped. |
+| `BORDER_SLOP` | `12` | How far a divider may sit from the border it was found for, and how far a split's rect may fall short of containing the pane, before that split is dropped. |
 
 ### Drag performance
 
@@ -143,17 +143,18 @@ range, where that border is and where the split found for it would put its
 divider, and finally the chain of splits above the pane with the orientation,
 child index and fraction read from each.
 
-Walking up the pane tree can reach a split that is not the pane's neighbour —
-a child order the orientation test reads backwards, a rect Houdini has not
-refreshed — and the divider then lands nowhere near the border it was found
-for. Those are dropped rather than drawn, which is what `BORDER_SLOP` sets the
-distance for; `debug()` prints them as `DROPPED` so you can see why a border
-does not respond.
+Walking up the pane tree reports a split but cannot prove it is the pane's
+neighbour, and the geometry Houdini hands back does not always match what is
+on screen. A split that owns a pane's border contains that pane and puts its
+divider on that border, so both are checked and whatever fails is dropped
+rather than drawn. `BORDER_SLOP` sets how much slack each check allows, and
+`debug()` prints each dropped split with the check it failed, so you can see
+why a border does not respond.
 
 ## Requirements
 
-- Houdini 20.5 or newer (PySide6). Older PySide2 builds are supported by the
-  import fallback but have not been tested.
+- Houdini 20.5 or newer (PySide6), or Houdini 20.0 (PySide2/Qt5) through the
+  import fallback, which is in use.
 - Uses only public HOM APIs: `hou.ui.paneUnderCursor()`,
   `hou.Pane.qtScreenGeometry()`, `getSplitParent()` / `getSplitChild()` and
   `getSplitFraction()` / `setSplitFraction()`.
