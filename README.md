@@ -75,6 +75,9 @@ import pane_resize_anywhere
 pane_resize_anywhere.toggle()
 ```
 
+It reports the new state in the status bar, naming the current shortcut when
+it switches on, so a rebound `MODIFIERS` or `BUTTON` is never a guess.
+
 ### Reloading during development
 
 ```python
@@ -130,26 +133,13 @@ inner divider does, so it keeps its full length.
 
 ## Troubleshooting
 
-**A band appears somewhere unexpected, or a border will not grab.** Put the
-mouse where it goes wrong and run:
-
-```python
-import pane_resize_anywhere
-pane_resize_anywhere.debug()
-```
-
-It prints the pane under the cursor and its rect, then, for each border in
-range, where that border is and where the split found for it would put its
-divider, and finally the chain of splits above the pane with the orientation,
-child index and fraction read from each.
-
-Walking up the pane tree reports a split but cannot prove it is the pane's
-neighbour, and the geometry Houdini hands back does not always match what is
-on screen. A split that owns a pane's border contains that pane and puts its
-divider on that border, so both are checked and whatever fails is dropped
-rather than drawn. `BORDER_SLOP` sets how much slack each check allows, and
-`debug()` prints each dropped split with the check it failed, so you can see
-why a border does not respond.
+**A border will not grab.** Walking up the pane tree reports a split but
+cannot prove it is the pane's neighbour, and the geometry Houdini hands back
+does not always match what is on screen. A split that owns a pane's border
+contains that pane and puts its divider on that border, so both are checked
+and whatever fails either one is dropped rather than drawn — better a border
+that does not respond than a band across the middle of the window. If a border
+that should work is being dropped, raise `BORDER_SLOP`.
 
 ## Requirements
 

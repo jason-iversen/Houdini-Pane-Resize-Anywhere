@@ -97,6 +97,19 @@ BORDER_SLOP = 12
 
 _LEFT, _RIGHT, _TOP, _BOTTOM = "left", "right", "top", "bottom"
 
+_MODIFIER_NAMES = (
+    (Qt.ControlModifier, "Ctrl"),
+    (Qt.AltModifier, "Alt"),
+    (Qt.ShiftModifier, "Shift"),
+    (Qt.MetaModifier, "Meta"),
+)
+
+_BUTTON_NAMES = (
+    (Qt.LeftButton, "left"),
+    (Qt.MiddleButton, "middle"),
+    (Qt.RightButton, "right"),
+)
+
 _ZERO = QtCore.QPoint(0, 0)  # "wherever the divider is now", for hover bands
 
 
@@ -162,8 +175,8 @@ def _border_pos(rect, edge):
     return rect.bottom()
 
 
-def _rejection(drag, rect, edge):
-    """Why this drag cannot be that border of the pane, or None if it can.
+def _owns_border(drag, rect, edge):
+    """True if this drag's split really is that border of a pane with this rect.
 
     A split that owns a pane's border contains that pane and puts its divider
     on that border.  Either test failing means the geometry Houdini reported
@@ -171,12 +184,10 @@ def _rejection(drag, rect, edge):
     the split is not the neighbour the walk up the tree took it for.
     """
     room = drag.rect.adjusted(-BORDER_SLOP, -BORDER_SLOP, BORDER_SLOP, BORDER_SLOP)
-    if not room.contains(rect):
-        return "its split does not contain the pane"
-    off = drag.divider_pos(_ZERO) - _border_pos(rect, edge)
-    if abs(off) > BORDER_SLOP:
-        return "its divider is %+d px off the border" % off
-    return None
+    return (
+        room.contains(rect)
+        and abs(drag.divider_pos(_ZERO) - _border_pos(rect, edge)) <= BORDER_SLOP
+    )
 
 
 def _edges_near(rect, pos):
@@ -324,7 +335,7 @@ def _drags_at(pos):
     drags = []
     for edge in _edges_near(rect, pos):
         drag = _find_split_for_edge(pane, edge)
-        if drag is not None and _rejection(drag, rect, edge) is None:
+        if drag is not None and _owns_border(drag, rect, edge):
             drags.append(drag)
     return drags
 
@@ -594,53 +605,25 @@ def is_installed():
     return _filter is not None
 
 
-def debug(pos=None):
-    """Print what a press at pos (default: the mouse) grabs, and what it skips.
-
-    Run it from the Python shell with the mouse where a band looks wrong:
-
-        import pane_resize_anywhere
-        pane_resize_anywhere.debug()
-    """
-    if pos is None:
-        pos = QtGui.QCursor.pos()
-    pane = _leaf_pane_under(hou.ui.paneUnderCursor(), pos)
-    rect = _geometry(pane)
-    print("cursor      %d %d" % (pos.x(), pos.y()))
-    print("pane        %s  rect %s  maximized %s"
-          % (pane, rect, pane is not None and pane.isMaximized()))
-    if rect is None:
-        return
-
-    for edge in _edges_near(rect, pos):
-        drag = _find_split_for_edge(pane, edge)
-        if drag is None:
-            print("%-11s no split above this border (window edge)" % edge)
-            continue
-        why = _rejection(drag, rect, edge)
-        print("%-11s divider at %d, border at %d, split rect %s -> %s"
-              % (edge, drag.divider_pos(_ZERO), _border_pos(rect, edge),
-                 drag.rect, "used" if why is None else "DROPPED: " + why))
-
-    print("ancestors:")
-    child, parent = pane, pane.getSplitParent()
-    while parent is not None:
-        c0 = parent.getSplitChild(0)
-        index = 0 if (c0 is not None and c0.id() == child.id()) else 1
-        try:
-            fraction = "%.4f" % child.getSplitFraction()
-        except hou.Error:
-            fraction = "?"
-        print("   rect %s  side_by_side %s  child index %d  fraction %s"
-              % (_geometry(parent), _is_side_by_side(parent), index, fraction))
-        child, parent = parent, parent.getSplitParent()
+def shortcut():
+    """MODIFIERS and BUTTON as text, e.g. "Ctrl+Alt+right-drag"."""
+    mods = [name for flag, name in _MODIFIER_NAMES
+            if _flag_int(MODIFIERS) & _flag_int(flag)]
+    button = "mouse"
+    for flag, name in _BUTTON_NAMES:
+        if _flag_int(BUTTON) == _flag_int(flag):
+            button = name
+    return "+".join(mods + [button + "-drag"])
 
 
 def toggle():
     """Shelf-tool helper: switch the handler on or off and report the state."""
     if is_installed():
         uninstall()
-        hou.ui.setStatusMessage("Pane resize-anywhere: off")
+        hou.ui.setStatusMessage("Pane resize-anywhere off")
     else:
         install()
-        hou.ui.setStatusMessage("Pane resize-anywhere: on")
+        hou.ui.setStatusMessage(
+            "Pane resize-anywhere on: %s near a pane border resizes it"
+            % shortcut()
+        )
