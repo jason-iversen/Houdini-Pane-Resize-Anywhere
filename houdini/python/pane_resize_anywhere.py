@@ -84,6 +84,14 @@ DRAG_INTERVAL_MS = 30
 # Thickness in pixels of a rubber band.
 BAND_THICKNESS = 4
 
+# How far a divider may sit from the pane border it was found for and still
+# count as that border, in pixels.  A split whose divider lands further away
+# than this is dropped: walking up the pane tree can reach a split that is not
+# actually the pane's neighbour, and drawing that one puts a band across the
+# middle of the screen, nowhere near the pane the cursor is in.  Raise it if
+# your theme has unusually wide divider gaps.
+BORDER_SLOP = 12
+
 # --------------------------------------------------------------- internals --
 
 _LEFT, _RIGHT, _TOP, _BOTTOM = "left", "right", "top", "bottom"
@@ -140,6 +148,22 @@ def _is_side_by_side(split):
     # offsets (rather than testing one for zero) stays correct when a child is
     # stowed to a few pixels wide.
     return (r1.left() - r0.left()) > (r1.top() - r0.top())
+
+
+def _border_pos(rect, edge):
+    """Screen x or y of one border of a pane."""
+    if edge == _LEFT:
+        return rect.left()
+    if edge == _RIGHT:
+        return rect.right()
+    if edge == _TOP:
+        return rect.top()
+    return rect.bottom()
+
+
+def _on_border(drag, rect, edge):
+    """True if this drag's divider really is that border of the pane."""
+    return abs(drag.divider_pos(_ZERO) - _border_pos(rect, edge)) <= BORDER_SLOP
 
 
 def _edges_near(rect, pos):
@@ -287,7 +311,9 @@ def _drags_at(pos):
     drags = []
     for edge in _edges_near(rect, pos):
         drag = _find_split_for_edge(pane, edge)
-        if drag is not None:
+        # The walk can only report a split, not prove it is this pane's
+        # neighbour, so check that its divider lands on the border it claims.
+        if drag is not None and _on_border(drag, rect, edge):
             drags.append(drag)
     return drags
 
@@ -555,6 +581,48 @@ def uninstall():
 
 def is_installed():
     return _filter is not None
+
+
+def debug(pos=None):
+    """Print what a press at pos (default: the mouse) grabs, and what it skips.
+
+    Run it from the Python shell with the mouse where a band looks wrong:
+
+        import pane_resize_anywhere
+        pane_resize_anywhere.debug()
+    """
+    if pos is None:
+        pos = QtGui.QCursor.pos()
+    pane = _leaf_pane_under(hou.ui.paneUnderCursor(), pos)
+    rect = _geometry(pane)
+    print("cursor      %d %d" % (pos.x(), pos.y()))
+    print("pane        %s  rect %s  maximized %s"
+          % (pane, rect, pane is not None and pane.isMaximized()))
+    if rect is None:
+        return
+
+    for edge in _edges_near(rect, pos):
+        drag = _find_split_for_edge(pane, edge)
+        if drag is None:
+            print("%-11s no split above this border (window edge)" % edge)
+            continue
+        print("%-11s divider at %d, border at %d, split rect %s -> %s"
+              % (edge, drag.divider_pos(_ZERO), _border_pos(rect, edge),
+                 drag.rect,
+                 "used" if _on_border(drag, rect, edge) else "DROPPED, see above"))
+
+    print("ancestors:")
+    child, parent = pane, pane.getSplitParent()
+    while parent is not None:
+        c0 = parent.getSplitChild(0)
+        index = 0 if (c0 is not None and c0.id() == child.id()) else 1
+        try:
+            fraction = "%.4f" % child.getSplitFraction()
+        except hou.Error:
+            fraction = "?"
+        print("   rect %s  side_by_side %s  child index %d  fraction %s"
+              % (_geometry(parent), _is_side_by_side(parent), index, fraction))
+        child, parent = parent, parent.getSplitParent()
 
 
 def toggle():
