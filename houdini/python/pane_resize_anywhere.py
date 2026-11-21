@@ -10,6 +10,9 @@ redraw, so DRAG_MODE decides how often that happens: "live" moves the splits
 at most once every DRAG_INTERVAL_MS, "preview" draws a rubber band during the
 drag and moves them once, on release.
 
+Holding MODIFIERS and dragging PAN_BUTTON inside a parameter pane pans it
+instead, grab and drag: the contents follow the mouse.
+
 It works in every pane type (viewport, network editor, parameters, Python
 panels, ...) because it filters Qt's application-level mouse events instead
 of using a per-pane-type hook such as nodegraphhooks.
@@ -24,10 +27,12 @@ one-line package file in $HOUDINI_USER_PREF_DIR/packages/:
 or copy pane_resize_anywhere.json there and set PANE_RESIZE_ANYWHERE to the
 absolute path of this repository's houdini/ folder.  Restart Houdini.
 
-houdini/pythonX.Ylibs/uiready.py calls install() once the UI is ready.
-install() is a no-op outside the UI (hython, hbatch) and defers itself until
-the Qt application exists, so it is also safe to call from pythonrc.py.
-A shelf tool can call pane_resize_anywhere.toggle() to switch it on and off.
+install.py sets this up for one Houdini: it copies this module into
+$HOUDINI_USER_PREF_DIR/scripts/python, which every Houdini Python reads, and
+has pythonrc.py there call install_when_ready().  Installed as a package
+instead, houdini/pythonX.Ylibs/uiready.py calls install() once the UI is
+ready.  Either way nothing happens outside the UI (hython, hbatch), and a
+shelf tool can call pane_resize_anywhere.toggle() to switch it on and off.
 """
 
 import hou
@@ -47,8 +52,20 @@ QEvent = QtCore.QEvent
 # Windows key is awkward on Windows.
 MODIFIERS = Qt.ControlModifier | Qt.AltModifier
 
-# Mouse button that starts the drag.
+# Mouse button that starts the resize drag.
 BUTTON = Qt.RightButton
+
+# Mouse button that pans a pane's contents, with the same MODIFIERS held.
+PAN_BUTTON = Qt.MiddleButton
+
+# Pane tab types the pan works in, named as in hou.paneTabType.  "Parm" is
+# the parameter pane; add e.g. "DetailsView" or "PythonPanel" for those.
+PAN_PANE_TYPES = ("Parm",)
+
+# Panes Houdini draws itself have no Qt scroll bars to set, so there the drag
+# is turned into mouse wheel notches: one notch per this many pixels dragged.
+# Lower it if such a pane pans slower than the mouse moves.
+PAN_PIXELS_PER_NOTCH = 40
 
 # How close to a pane border the press must be.  < 1 is a fraction of the
 # pane's width/height (0.5 == anywhere in the pane); >= 1 is fixed pixels.
@@ -319,17 +336,25 @@ def _find_split_for_edge(pane, edge):
     return None  # reached the window edge: nothing to resize
 
 
-def _drags_at(pos):
-    """The splits a press at global pos would grab, or an empty list."""
+def _pane_at(pos):
+    """The leaf pane under global pos and its rect, or (None, None)."""
     try:
         pane = hou.ui.paneUnderCursor()
     except hou.Error:
-        return []
+        return None, None
     pane = _leaf_pane_under(pane, pos)
-    if pane is None or pane.isMaximized():
-        return []
+    if pane is None:
+        return None, None
     rect = _geometry(pane)
     if rect is None or not rect.contains(pos):
+        return None, None
+    return pane, rect
+
+
+def _drags_at(pos, where=None):
+    """The splits a press at global pos would grab, or an empty list."""
+    pane, rect = where if where is not None else _pane_at(pos)
+    if pane is None or pane.isMaximized():
         return []
 
     drags = []
@@ -391,10 +416,115 @@ class _RubberBand(QtWidgets.QWidget):
         painter.end()
 
 
+# ------------------------------------------------------------------ panning --
+
+
+def _is_pannable(pane):
+    """True if this pane's current tab is one the pan drag works in."""
+    if pane is None:
+        return False
+    try:
+        tab = pane.currentTab()
+        return tab is not None and tab.type().name() in PAN_PANE_TYPES
+    except hou.Error:
+        return False
+
+
+def _scroll_area_at(pos):
+    """The Qt scroll area under global pos, if the pane is built from Qt."""
+    widget = QtWidgets.QApplication.widgetAt(pos)
+    while widget is not None:
+        if isinstance(widget, _RubberBand):
+            return None  # one of ours, still on screen: do not pan it
+        if isinstance(widget, QtWidgets.QAbstractScrollArea):
+            bars = (widget.verticalScrollBar(), widget.horizontalScrollBar())
+            if any(b is not None and b.maximum() > b.minimum() for b in bars):
+                return widget
+        widget = widget.parentWidget()
+    return None
+
+
+_WHEEL_SIGNATURES = (
+    # Qt6, and Qt 5.12 and later.
+    lambda local, pos, angle: QtGui.QWheelEvent(
+        local, pos, QtCore.QPoint(0, 0), angle,
+        Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False),
+    # Older Qt5, which still wants the Qt4 delta and orientation.
+    lambda local, pos, angle: QtGui.QWheelEvent(
+        local, pos, QtCore.QPoint(0, 0), angle,
+        angle.y() or angle.x(), Qt.Vertical if angle.y() else Qt.Horizontal,
+        Qt.NoButton, Qt.NoModifier),
+)
+
+
+def _send_wheel(widget, pos, notches_x, notches_y):
+    """Scroll whatever is under pos by sending it wheel notches."""
+    # No modifiers: Houdini reads Ctrl and Alt with the wheel as its own
+    # gestures, and they are held down for the whole of this drag.
+    angle = QtCore.QPoint(int(notches_x * 120), int(notches_y * 120))
+    local = QtCore.QPointF(widget.mapFromGlobal(pos))
+    for build in _WHEEL_SIGNATURES:
+        try:
+            event = build(local, QtCore.QPointF(pos), angle)
+        except TypeError:
+            continue
+        QtWidgets.QApplication.sendEvent(widget, event)
+        return
+
+
+class _PanDrag(object):
+    """A pane being panned, grab and drag: the contents follow the mouse.
+
+    A pane made of Qt widgets has scroll bars to set, which tracks the mouse
+    exactly.  A pane Houdini draws itself has none, so the distance dragged is
+    turned into the wheel notches it does listen to.
+    """
+
+    __slots__ = ("area", "widget", "start_h", "start_v", "sent_x", "sent_y")
+
+    def __init__(self, area, widget):
+        self.area = area
+        self.widget = widget
+        self.start_h = self.start_v = 0
+        self.sent_x = self.sent_y = 0  # notches sent so far, on the wheel path
+        if area is not None:
+            self.start_h = area.horizontalScrollBar().value()
+            self.start_v = area.verticalScrollBar().value()
+
+    def apply(self, delta, pos):
+        if self.area is not None:
+            # The contents follow the mouse, so the scroll bars move against
+            # it.  setValue() clamps at the ends of the range for us.
+            self.area.horizontalScrollBar().setValue(self.start_h - delta.x())
+            self.area.verticalScrollBar().setValue(self.start_v - delta.y())
+            return
+        # Send only the notches not sent yet, counted from where the drag
+        # began, so rounding cannot accumulate into a drift.
+        want_x = int(delta.x() / float(PAN_PIXELS_PER_NOTCH))
+        want_y = int(delta.y() / float(PAN_PIXELS_PER_NOTCH))
+        if (want_x, want_y) == (self.sent_x, self.sent_y):
+            return
+        _send_wheel(self.widget, pos, want_x - self.sent_x, want_y - self.sent_y)
+        self.sent_x, self.sent_y = want_x, want_y
+
+
+def _pan_at(pos, where=None):
+    """The pan a press at global pos would start, or None."""
+    pane, _ = where if where is not None else _pane_at(pos)
+    if not _is_pannable(pane):
+        return None
+    area = _scroll_area_at(pos)
+    widget = QtWidgets.QApplication.widgetAt(pos)
+    if area is None and (widget is None or isinstance(widget, _RubberBand)):
+        return None  # nothing to scroll and nothing to send a wheel to
+    return _PanDrag(area, widget)
+
+
 class _PaneResizeFilter(QtCore.QObject):
     def __init__(self):
         super(_PaneResizeFilter, self).__init__()
-        self._drags = []            # [_AxisDrag] while a drag is in progress
+        self._drags = []            # [_AxisDrag] while a resize is in progress
+        self._pan = None            # _PanDrag while a pan is in progress
         self._start = None          # QPoint where the drag began
         self._delta = None          # newest mouse delta, not applied yet
         self._cursor_shape = None   # override cursor currently shown, if any
@@ -487,12 +617,13 @@ class _PaneResizeFilter(QtCore.QObject):
             if et == QEvent.Type.MouseButtonRelease:
                 return self._on_release(event)
             if et == QEvent.Type.MouseButtonDblClick:
-                return bool(self._drags)
+                return bool(self._drags) or self._pan is not None
             if et == QEvent.Type.ContextMenu and self._swallow_context_menu:
                 # Windows synthesises a context-menu event on RMB release.
                 self._swallow_context_menu = False
                 return True
-            if et == QEvent.Type.KeyRelease and not self._drags and self._hover_shown():
+            if (et == QEvent.Type.KeyRelease and not self._drags
+                    and self._pan is None and self._hover_shown()):
                 if not _modifiers_match(QtWidgets.QApplication.queryKeyboardModifiers()):
                     self._clear_hover()
         except Exception:
@@ -503,36 +634,61 @@ class _PaneResizeFilter(QtCore.QObject):
         return False
 
     def _on_press(self, event):
-        if self._drags:
+        if self._drags or self._pan is not None:
             return True  # another button during a drag: ignore it
-        if event.button() != BUTTON or not _modifiers_match(event.modifiers()):
+        if not _modifiers_match(event.modifiers()):
             self._clear_hover()  # a click we do not take ends the hover preview
             return False
         pos = _global_pos(event)
-        found = _drags_at(pos)
-        if not found:
-            self._clear_hover()
-            return False
-        self._drags = found
-        self._start = pos
-        self._delta = _ZERO
-        self._since_apply.start()
-        self._set_cursor(_cursor_for(found))
-        self._show_bands(found, self._delta)
-        return True
+
+        if event.button() == BUTTON:
+            found = _drags_at(pos)
+            if found:
+                self._drags = found
+                self._start = pos
+                self._delta = _ZERO
+                self._since_apply.start()
+                self._set_cursor(_cursor_for(found))
+                self._show_bands(found, self._delta)
+                return True
+
+        if event.button() == PAN_BUTTON:
+            # The bands are windows of their own; hide them before looking at
+            # what is under the cursor to pan.
+            self._hide_bands()
+            pan = _pan_at(pos)
+            if pan is not None:
+                self._pan = pan
+                self._start = pos
+                self._set_cursor(Qt.ClosedHandCursor)
+                return True
+
+        self._clear_hover()
+        return False
 
     def _on_move(self, event):
         if self._drags:
             self._queue(_global_pos(event) - self._start)
+            return True
+        if self._pan is not None:
+            pos = _global_pos(event)
+            self._pan.apply(pos - self._start, pos)
             return True
 
         if not (SHOW_HOVER_CURSOR or SHOW_HOVER_BANDS):
             return False
         if _flag_int(event.buttons()) == 0 and _modifiers_match(event.modifiers()):
             # What a press here would grab, drawn where it would grab it.
-            found = _drags_at(_global_pos(event))
+            pos = _global_pos(event)
+            where = _pane_at(pos)
+            found = _drags_at(pos, where)
             if SHOW_HOVER_CURSOR:
-                self._set_cursor(_cursor_for(found) if found else None)
+                if found:
+                    self._set_cursor(_cursor_for(found))
+                elif _is_pannable(where[0]):
+                    self._set_cursor(Qt.OpenHandCursor)
+                else:
+                    self._set_cursor(None)
             if SHOW_HOVER_BANDS:
                 if found:
                     self._show_bands(found, _ZERO, HOVER_BAND_OPACITY)
@@ -543,6 +699,13 @@ class _PaneResizeFilter(QtCore.QObject):
         return False
 
     def _on_release(self, event):
+        if self._pan is not None:
+            if event.button() != PAN_BUTTON:
+                return False
+            pos = _global_pos(event)
+            self._pan.apply(pos - self._start, pos)
+            self._end_drag()
+            return True
         if not self._drags or event.button() != BUTTON:
             return False
         self._timer.stop()
@@ -557,6 +720,7 @@ class _PaneResizeFilter(QtCore.QObject):
     def _end_drag(self):
         self._timer.stop()
         self._drags = []
+        self._pan = None
         self._start = None
         self._delta = None
         self._hide_bands()
@@ -582,8 +746,25 @@ def install():
     app.installEventFilter(_filter)
 
 
+def install_when_ready():
+    """Install as soon as there is a UI.  Safe to call at any point in startup.
+
+    A startup script in $HOUDINI_USER_PREF_DIR/scripts/python runs before the
+    UI is up, and so early that hou.isUIAvailable() can still say there is
+    none, so ask the event loop to call back rather than give up on it.  In
+    hython and hbatch there is no event loop to ask, which is the answer.
+    """
+    if hou.isUIAvailable():
+        install()
+        return
+    try:
+        hou.ui.addEventLoopCallback(_deferred_install)
+    except hou.Error:
+        pass  # no UI in this session, and there will not be one
+
+
 def _deferred_install():
-    if QtWidgets.QApplication.instance() is None:
+    if QtWidgets.QApplication.instance() is None or not hou.isUIAvailable():
         return
     hou.ui.removeEventLoopCallback(_deferred_install)
     install()
@@ -605,15 +786,16 @@ def is_installed():
     return _filter is not None
 
 
-def shortcut():
-    """MODIFIERS and BUTTON as text, e.g. "Ctrl+Alt+right-drag"."""
+def shortcut(button=None):
+    """MODIFIERS and a button as text, e.g. "Ctrl+Alt+right-drag"."""
     mods = [name for flag, name in _MODIFIER_NAMES
             if _flag_int(MODIFIERS) & _flag_int(flag)]
-    button = "mouse"
-    for flag, name in _BUTTON_NAMES:
-        if _flag_int(BUTTON) == _flag_int(flag):
-            button = name
-    return "+".join(mods + [button + "-drag"])
+    wanted = BUTTON if button is None else button
+    name = "mouse"
+    for flag, button_name in _BUTTON_NAMES:
+        if _flag_int(wanted) == _flag_int(flag):
+            name = button_name
+    return "+".join(mods + [name + "-drag"])
 
 
 def toggle():
@@ -624,6 +806,7 @@ def toggle():
     else:
         install()
         hou.ui.setStatusMessage(
-            "Pane resize-anywhere on: %s near a pane border resizes it"
-            % shortcut()
+            "Pane resize-anywhere on: %s near a pane border resizes it, "
+            "%s pans a parameter pane"
+            % (shortcut(), shortcut(PAN_BUTTON))
         )

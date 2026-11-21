@@ -21,6 +21,9 @@ border follows the mouse. No more hunting for the thin divider between panes.
 - A band follows the mouse exactly during the drag, while moving the splits
   themselves is throttled, so a 3D viewport does not redraw once per mouse
   move (see [Drag performance](#drag-performance)).
+- **Ctrl + Alt + middle-drag** inside a parameter pane pans it instead: grab
+  and drag, the contents follow the mouse (see
+  [Panning a pane](#panning-a-pane)).
 
 It works in every pane type — viewport, network editor, parameters, Python
 panels, and so on — because it filters Qt's application-level mouse events
@@ -28,8 +31,39 @@ rather than using a per-pane-type hook such as `nodegraphhooks`.
 
 ## Install
 
-This repository is a [Houdini package](https://www.sidefx.com/docs/houdini/ref/plugins.html),
-so nothing needs to be copied into your Houdini preferences.
+Clone or download this repository somewhere permanent, then run the installer
+from the Houdini you want it in — **Windows ▸ Python Shell**:
+
+```python
+import sys
+sys.path.insert(0, "C:/path/to/Houdini Pane Resize Anywhere")
+import install
+install.install()
+```
+
+or from a shell, `hython install.py`, or from any Python at all by naming the
+preferences folder yourself:
+
+```
+python install.py "C:/Users/you/OneDrive/Documents/houdini22.0"
+```
+
+It copies `pane_resize_anywhere.py` into that folder's `scripts/python` and
+adds a block to `pythonrc.py` there that switches the handler on when the UI
+comes up, then starts it in the running session so there is nothing to
+restart. `scripts/python` is read by every Houdini Python, so unlike a
+`pythonX.Ylibs` hook this survives a Houdini built against a new Python
+version; re-run it to update the copy, and `install.uninstall()` removes it
+again, leaving the rest of an existing `pythonrc.py` alone.
+
+### As a package instead
+
+`install.install_package()` registers this repository with Houdini instead of
+copying out of it, so edits to the repository are live. That route needs a
+startup hook for the running Houdini's exact Python version, which it writes;
+the manual equivalent is:
+
+### By hand
 
 1. Clone or download this repository somewhere permanent.
 2. Create `$HOUDINI_USER_PREF_DIR/packages/pane_resize_anywhere.json`
@@ -44,7 +78,8 @@ so nothing needs to be copied into your Houdini preferences.
    adds `houdini/` to `HOUDINI_PATH` and `houdini/python/` to `PYTHONPATH`.
 
 3. Restart Houdini. `houdini/pythonX.Ylibs/uiready.py` installs the handler
-   as soon as the UI is ready.
+   as soon as the UI is ready. A Houdini whose Python has no such folder here
+   needs one adding — which is the reason to prefer the installer above.
 
 Alternatively, copy `pane_resize_anywhere.json` into your `packages` folder
 and change `PANE_RESIZE_ANYWHERE` to the absolute path of the repository's
@@ -55,6 +90,8 @@ and change `PANE_RESIZE_ANYWHERE` to the absolute path of the repository's
 ```
 Houdini Pane Resize Anywhere/
 ├── pane_resize_anywhere.json        # package file (HOUDINI_PATH + PYTHONPATH)
+├── install.py                       # installs into one Houdini's preferences
+├── tests/                           # run with any PySide, no Houdini needed
 └── houdini/                         # added to HOUDINI_PATH
     ├── python/
     │   └── pane_resize_anywhere.py  # the event handler
@@ -62,9 +99,10 @@ Houdini Pane Resize Anywhere/
     └── python3.13libs/uiready.py    # startup hook, Houdini 22 (Python 3.13)
 ```
 
-Houdini only runs the `uiready.py` that matches its own Python version. For a
-Houdini build with a different Python, add a `pythonX.Ylibs/uiready.py` with
-the same two lines.
+Houdini only runs the `uiready.py` that matches its own Python version, so as
+a package a build with a different Python needs its own
+`pythonX.Ylibs/uiready.py` with the same two lines. Installing into
+`scripts/python` avoids that entirely: every Houdini Python reads that folder.
 
 ### Optional shelf tool
 
@@ -92,7 +130,10 @@ Settings are at the top of `pane_resize_anywhere.py`:
 | Setting | Default | Description |
 | --- | --- | --- |
 | `MODIFIERS` | `Ctrl + Alt` | Modifier keys that must be held (and no others). Ctrl+Alt avoids Houdini's own Alt/Space viewport navigation. |
-| `BUTTON` | Right mouse | Mouse button that starts the drag. |
+| `BUTTON` | Right mouse | Mouse button that starts the resize drag. |
+| `PAN_BUTTON` | Middle mouse | Mouse button that pans a pane, with the same modifiers held. |
+| `PAN_PANE_TYPES` | `("Parm",)` | Pane tab types the pan works in, named as in `hou.paneTabType`. |
+| `PAN_PIXELS_PER_NOTCH` | `40` | Pixels dragged per wheel notch, in panes that have no Qt scroll bars. |
 | `EDGE_MARGIN` | `0.4` | How close to a border the press must be. Below 1 it is a fraction of the pane's width/height (`0.5` = anywhere in the pane); 1 or above is a fixed pixel distance. |
 | `MIN_FRACTION` | `0.02` | Stops a split from being collapsed completely. |
 | `SHOW_HOVER_CURSOR` | `True` | Show a resize cursor while the modifiers are held. |
@@ -131,6 +172,30 @@ keep a fixed length: its end follows the outer band as that one moves, and the
 two stay joined at the corner. The outer band spans its own split whatever the
 inner divider does, so it keeps its full length.
 
+### Panning a pane
+
+Ctrl + Alt + middle-drag inside a parameter pane pans it, the way the hand
+tool works everywhere else: the contents go where you drag them. The cursor
+turns into an open hand while the modifiers are held over a pane that pans,
+and a closed one while you are dragging.
+
+How the pane is moved depends on what it is made of, which the drag works out
+when it starts:
+
+- A pane built from Qt widgets has scroll bars, which are set directly. The
+  contents then track the mouse exactly, pixel for pixel, and stop at the ends
+  of the range rather than wrapping.
+- A pane Houdini draws itself has no Qt scroll bars to set, so the distance
+  dragged is turned into the mouse wheel notches it does listen to — one per
+  `PAN_PIXELS_PER_NOTCH`. Each notch scrolls by whatever that pane scrolls by,
+  so this is a gain rather than a 1:1 match: lower the setting if the pane
+  moves slower than the mouse, raise it if it runs ahead. The notches are
+  counted from where the drag began and only the difference is sent, so the
+  pane cannot drift away from the mouse over a long drag.
+
+The synthetic wheel events carry no modifiers, since Ctrl and Alt are held for
+the whole drag and Houdini reads those with the wheel as its own gestures.
+
 ## Troubleshooting
 
 **A border will not grab.** Walking up the pane tree reports a split but
@@ -143,7 +208,9 @@ that should work is being dropped, raise `BORDER_SLOP`.
 
 ## Requirements
 
-- Houdini 20.0 or newer. 
+- Houdini 20.0 or newer, whatever Python it was built with when installed
+  into `scripts/python`.
+
 - Uses only public HOM APIs: `hou.ui.paneUnderCursor()`,
   `hou.Pane.qtScreenGeometry()`, `getSplitParent()` / `getSplitChild()` and
   `getSplitFraction()` / `setSplitFraction()`.
