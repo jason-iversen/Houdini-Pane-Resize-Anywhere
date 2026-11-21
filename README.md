@@ -96,7 +96,7 @@ Houdini Pane Resize Anywhere/
     ├── python/
     │   └── pane_resize_anywhere.py  # the event handler
     ├── python3.11libs/uiready.py    # startup hook, Houdini 20.5 / 21 (Python 3.11)
-    └── python3.13libs/uiready.py    # startup hook, Houdini 22 (Python 3.13)
+    └── python3.13libs/uiready.py    # startup hook, Houdini 22 / 23 (Python 3.13)
 ```
 
 Houdini only runs the `uiready.py` that matches its own Python version, so as
@@ -226,7 +226,8 @@ that should work is being dropped, raise `BORDER_SLOP`.
 ## Requirements
 
 - Houdini 20.0 or newer, whatever Python it was built with when installed
-  into `scripts/python`.
+  into `scripts/python`. As a package, the hooks here cover Python 3.11
+  (Houdini 20.5 / 21) and 3.13 (Houdini 22 and 23.0).
 
 - Uses only public HOM APIs: `hou.ui.paneUnderCursor()`,
   `hou.Pane.qtScreenGeometry()`, `getSplitParent()` / `getSplitChild()` and
