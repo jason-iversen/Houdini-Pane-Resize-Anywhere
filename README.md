@@ -116,12 +116,29 @@ pane_resize_anywhere.toggle()
 It reports the new state in the status bar, naming the current shortcut when
 it switches on, so a rebound `MODIFIERS` or `BUTTON` is never a guess.
 
+### Which copy is loaded
+
+Houdini imports the first `pane_resize_anywhere` on its Python path, so a copy
+left in `scripts/python` wins over the one in a package. To see which one, and
+what it is:
+
+```python
+import pane_resize_anywhere as m
+print(m.__version__, m.__file__)
+```
+
+A copy older than 1.2.0 has no `__version__` at all, and none of the panning:
+`AttributeError: install_when_ready` printed at startup means `pythonrc.py`
+has been updated but the module next to it has not.
+
 ### Reloading during development
 
 ```python
 import importlib, pane_resize_anywhere as m
 m.uninstall(); importlib.reload(m); m.install()
 ```
+
+That reloads whatever file `m.__file__` names, so overwrite that copy first.
 
 ## Configuration
 

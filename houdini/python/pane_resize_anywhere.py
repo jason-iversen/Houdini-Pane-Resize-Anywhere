@@ -37,6 +37,10 @@ shelf tool can call pane_resize_anywhere.toggle() to switch it on and off.
 
 import hou
 
+# Bumped when this file changes, so a copy of it can say what it is:
+#     import pane_resize_anywhere as m; print(m.__version__, m.__file__)
+__version__ = "1.2.0"  # pane panning, and the installer that writes this copy
+
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError:  # Houdini < 20.5
